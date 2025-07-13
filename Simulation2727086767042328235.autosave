@@ -1,0 +1,342 @@
+int DINOS_PER_GENERATION = 1000;   // Small focused population
+float MIN_SPAWN_MILLIS = 500;    // Like Chrome game initial spawn rate
+float MAX_SPAWN_MILLIS = 1500;    // More breathing room between obstacles
+
+class Simulation {  ArrayList<Dino> dinos;
+  ArrayList<Enemy> enemies;  
+  float speed;
+  Ground ground;
+  int score;
+  int generation;
+  int last_gen_avg_score;
+  int last_gen_max_score;
+  int dinos_alive;
+
+  // Dynamic spawn control
+  float last_spawn_time;
+  float time_to_spawn;
+  
+  Simulation() {
+    dinos = new ArrayList<Dino>();
+    for (int i = 0; i < DINOS_PER_GENERATION; i++) {
+      dinos.add(new Dino());   
+    } 
+    enemies = new ArrayList<Enemy>();    speed = 15;  // Starting speed
+    ground = new Ground();
+    score = 0;
+    generation = 1;
+    last_gen_avg_score = 0;
+    last_gen_max_score = 0;
+    dinos_alive = DINOS_PER_GENERATION;
+    last_spawn_time = millis();
+    time_to_spawn = random(MIN_SPAWN_MILLIS, MAX_SPAWN_MILLIS);
+  }
+  
+  void update() {
+    for (Dino dino : dinos) {
+      if (dino.alive){
+        dino.update(next_obstacle_info(dino), (int)speed);
+      }
+    }
+    Iterator<Enemy> iterator = enemies.iterator();
+    while (iterator.hasNext()) {
+      Enemy enemy = iterator.next();
+      enemy.update((int)speed);
+      if (enemy.is_offscreen()) {
+        iterator.remove();
+      }
+    }
+    if (millis() - last_spawn_time > time_to_spawn) {
+      spawn_enemy();
+      last_spawn_time = millis();
+      time_to_spawn = random(MIN_SPAWN_MILLIS, MAX_SPAWN_MILLIS);
+    }    check_collisions();
+    ground.update((int)speed);
+  }
+
+  void check_collisions() {
+    dinos_alive = 0;
+    for (Dino dino : dinos) {
+      for (Enemy enemy : enemies) {
+        if (dino.alive && dino.is_collisioning_with(enemy)) {
+          dino.die(score);
+        }
+      }
+      if (dino.alive) {
+        dinos_alive++;
+      }
+    }
+    if (dinos_alive == 0) {
+      next_generation();
+    }
+  }
+  void next_generation() {
+    score = 0;
+    generation++;
+    // Gradually increase starting speed with generations
+    speed = 15;
+    enemies.clear();
+    
+    // Calculate fitness scores
+    int total_score = 0;
+    float max_score = 0;
+    for (Dino dino : dinos) {
+      total_score += dino.score;
+      max_score = max(max_score, dino.score);
+    }
+    last_gen_avg_score = total_score / DINOS_PER_GENERATION;
+    last_gen_max_score = (int)max_score;
+    
+    // Sort dinos by score
+    Collections.sort(dinos);
+    Collections.reverse(dinos);
+    
+    ArrayList<Dino> new_dinos = new ArrayList<Dino>();
+    
+    // Elite selection - keep top 10% unchanged
+    int eliteCount = (int)(DINOS_PER_GENERATION * 0.1);
+    for (int i = 0; i < eliteCount; i++) {
+      new_dinos.add(dinos.get(i));
+      new_dinos.get(i).reset();
+    }
+    
+    // Fresh blood - 5% new random dinos
+    int newCount = (int)(DINOS_PER_GENERATION * 0.05);
+    for (int i = 0; i < newCount; i++) {
+      new_dinos.add(new Dino());
+    }
+    
+    // Tournament selection for parents
+    while (new_dinos.size() < DINOS_PER_GENERATION) {
+      // Select parents through tournament
+      Dino parent1 = tournamentSelect(3); // Tournament size of 3
+      Dino parent2 = tournamentSelect(3);
+      
+      Dino child = new Dino();
+      
+      // 70% chance of crossover, otherwise clone better parent
+      if (random(1) < 0.7) {
+        child.genome = parent1.genome.crossover(parent2.genome);
+      } else {
+        child.genome = (parent1.score > parent2.score) ? 
+                      parent1.genome.copy() : parent2.genome.copy();
+      }
+      
+      // Always mutate offspring
+      child.genome = child.genome.mutate();
+      child.init_brain();
+      new_dinos.add(child);
+    }
+    
+    dinos = new_dinos;
+    dinos_alive = DINOS_PER_GENERATION;
+    
+    // Adjust spawn parameters based on generation performance
+    adjustSpawnParameters();
+  }
+  
+  // Tournament selection
+  Dino tournamentSelect(int tournamentSize) {
+    Dino best = null;
+    float bestScore = -1;
+    
+    for (int i = 0; i < tournamentSize; i++) {
+      Dino contestant = dinos.get((int)random(dinos.size()));
+      if (best == null || contestant.score > bestScore) {
+        best = contestant;
+        bestScore = contestant.score;
+      }
+    }
+    
+    return best;
+  }
+  
+  // Dynamically adjust spawn parameters based on performance
+  void adjustSpawnParameters() {
+    // More nuanced difficulty adjustment
+    if (last_gen_max_score > 1000) {
+      // Gradually increase difficulty for well-performing generations
+      MIN_SPAWN_MILLIS = max(1800, MIN_SPAWN_MILLIS - 50);
+      MAX_SPAWN_MILLIS = max(2800, MAX_SPAWN_MILLIS - 50);
+      
+    } else if (last_gen_max_score > 500) {
+      // Mild difficulty increase
+      MIN_SPAWN_MILLIS = max(2000, MIN_SPAWN_MILLIS - 25);
+      MAX_SPAWN_MILLIS = max(3000, MAX_SPAWN_MILLIS - 25);
+      
+    } else if (last_gen_max_score < 300) {
+      // Make it easier if performance is poor
+      MIN_SPAWN_MILLIS = min(2400, MIN_SPAWN_MILLIS + 50);
+      MAX_SPAWN_MILLIS = min(3400, MAX_SPAWN_MILLIS + 50);
+      
+    }
+    
+    // Ensure minimum challenge
+    MIN_SPAWN_MILLIS = constrain(MIN_SPAWN_MILLIS, 1500, 2400);
+    MAX_SPAWN_MILLIS = constrain(MAX_SPAWN_MILLIS, 2500, 3400);
+  }
+  float[] next_obstacle_info(Dino dino){
+    float[] result = {1350, 1350, 450, 0, 0};  // Default values when no obstacle
+    float closest_distance = 1350;
+    Enemy closest_enemy = null;
+    
+    // Find the closest enemy ahead of the dino
+    for (Enemy enemy : enemies){
+      // Calculate distance from dino's front to enemy's front
+      float dino_front = dino.x_pos + dino.obj_width;
+      float enemy_front = enemy.x_pos + enemy.sprite_offset[0];
+      float distance = enemy_front - dino_front;
+      
+      // Only consider obstacles ahead of the dino
+      if (distance > -enemy.obj_width && distance < closest_distance) {
+        closest_distance = distance;
+        closest_enemy = enemy;
+      }
+    }
+    
+    // If we found a valid enemy, update the result with precise measurements
+    if (closest_enemy != null) {
+      result[0] = closest_distance;                                // Precise distance to obstacle
+      result[1] = closest_enemy.x_pos;                            // Obstacle absolute x position
+      result[2] = closest_enemy.y_pos + closest_enemy.sprite_offset[1];  // Corrected y position
+      result[3] = closest_enemy.obj_width;                        // Obstacle width
+      result[4] = closest_enemy.obj_height;                       // Obstacle height
+    }
+    
+    return result;
+  }
+  
+  void print() {
+    ground.print();
+    for (Enemy enemy : enemies ) {
+      enemy.print();
+    }
+    for (Dino dino : dinos) {
+      dino.print();
+    }
+    print_info();
+  }
+  
+  void print_info(){
+    drawInfoPanel();
+    drawStats();
+    print_network();
+  }
+    void drawInfoPanel() {
+    // Main panel with modern style
+    noStroke();
+    fill(PANEL_COLOR);
+    rect(20, 20, 300, 220, 8);
+    
+    // Subtle gradient overlay for depth
+    noStroke();
+    fill(NODE_COLOR, 10);
+    rect(20, 20, 300, 100, 8, 8, 0, 0);
+  }
+  void drawStats() {
+    textAlign(LEFT);
+    
+    // Score in Chrome dino style
+    fill(TEXT_COLOR);
+    textSize(32);
+    text(nf(score, 5), 40, 70);  // Padded score like Chrome dino game
+    
+    fill(TEXT_COLOR);
+    textSize(14);
+    
+    // Generation info in Chrome style
+    text("GEN " + generation, 40, 100);
+    
+    // Stats with Chrome-style labels
+    String avgScore = "AVG " + last_gen_avg_score;
+    String maxScore = "HI " + last_gen_max_score;
+    String aliveCount = "ALIVE " + dinos_alive + "/" + DINOS_PER_GENERATION;
+    
+    // Divider line
+    stroke(NEUTRAL_COLOR);
+    strokeWeight(1);
+    line(40, 120, 280, 120);
+      // Stats text with enhanced styling
+    noStroke();
+    
+    // Average score with indicator
+    fill(NODE_COLOR);
+    text(avgScore, 40, 150);
+    
+    // High score with highlight
+    fill(NODE_ACTIVE);
+    text(maxScore, 40, 180);
+    
+    // Alive count with dynamic color
+    fill(dinos_alive > DINOS_PER_GENERATION/2 ? ACCENT_COLOR : SECONDARY_COLOR);
+    text(aliveCount, 40, 210);
+    
+    // Draw enhanced progress bar for alive dinos
+    float progressWidth = 240;
+    float progress = (float)dinos_alive / DINOS_PER_GENERATION;
+    
+    // Background bar with better visibility
+    noStroke();
+    fill(NEUTRAL_COLOR, 40);
+    rect(40, 220, progressWidth, 8, 4);
+    
+    // Progress bar with gradient effect
+    if (progress > 0) {
+        // Gradient from NODE_ACTIVE to ACCENT_COLOR
+        for(int i = 0; i < progressWidth * progress; i++) {
+            float gradientProgress = i / (progressWidth * progress);
+            color barColor = lerpColor(NODE_ACTIVE, ACCENT_COLOR, gradientProgress);
+            stroke(barColor);
+            line(40 + i, 220, 40 + i, 227);
+        }
+    }
+  }
+  
+  void print_network() {
+    for (Dino dino : dinos) {
+      if (dino.alive) {
+        dino.brain.print();
+        break;
+      }
+    }
+  }
+  
+  void tenth_of_second() {
+    for (Dino dino : dinos) {
+      if (dino.alive) {
+        dino.toggle_sprite();
+      }
+    }
+    score++;
+  }
+  
+  void quarter_of_second() {
+    for (Enemy enemy : enemies ) {
+      enemy.toggle_sprite();
+    }
+  }
+  void spawn_enemy() {
+    // Dynamic spawn probability based on speed and recent performance
+    float birdProbability = 0.3;  // Base bird spawn chance
+    
+    // Increase bird probability with speed
+    if (speed > 8) {
+      birdProbability = 0.35;
+    }
+    if (speed > 11) {
+      birdProbability = 0.4;
+    }
+    
+    // Adjust based on recent scores
+    if (last_gen_avg_score > 500) {
+      birdProbability += 0.05;  // More birds for better performing generations
+    }
+    
+    if (random(1) > birdProbability) {
+      enemies.add(new Cactus());
+    } else {
+      enemies.add(new Bird());
+    }
+  }
+  
+}
